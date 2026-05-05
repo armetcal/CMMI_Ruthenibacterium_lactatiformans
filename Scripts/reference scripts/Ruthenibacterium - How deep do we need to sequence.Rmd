@@ -1,0 +1,164 @@
+---
+title: "Ruthenibacterium functional comparison"
+author: "Avril Metcalfe-Roach"
+date: "2026-03-10"
+output: html_document
+---
+
+We see Ruth functions in CMMI, but not PD cohort. What seq depth do we need to see these functions? 
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+```
+
+# CMMI - with UNINTEGRATED
+
+```{r}
+# Taxonomy
+tax = readRDS('../Data/pilot_metagenomic_phyloseq_g4h.rds')
+tax_names = sample_names(tax)
+tax_total = sample_sums(tax)
+ruth_total = tax %>% subset_taxa(str_detect(Genus, 'Ruthenibacterium')) %>% sample_sums()
+ruth_pct = ruth_total/tax_total
+tax_table = tibble(Sample = tax_names,
+                   tax_total = tax_total,
+                   ruth_total = ruth_total,
+                   ruth_pct = ruth_pct) 
+
+# Functions
+key = read_csv("~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/sample_key.csv") %>% rename(Sample=old)
+path = data.table::fread('../Data/humann_exports_mgx_g4h/mgx_pathabundance_stratified.tsv', check.names = F)
+path_names = colnames(path)[-1] %>% sapply(function(x)str_split(x, pattern = "_",)[[1]][1] %>% as.numeric())
+path_total = colSums(path[,2:ncol(path)])
+ruth_path_total = path %>% filter(str_detect(`# Pathway`, 'Ruthenibacterium')) %>% 
+  select(-`# Pathway`) %>% 
+  colSums()
+ruth_path_pct = ruth_path_total/path_total
+path_table = tibble(Sample = path_names,
+                   path_total = path_total,
+                   ruth_path_total = ruth_path_total,
+                   ruth_path_pct = ruth_path_pct) %>% 
+  left_join(key) %>% 
+  select(-Sample) %>% 
+  rename(Sample=new)
+
+# Combine
+comb = full_join(tax_table, path_table)
+```
+
+# CMMI - without UNINTEGRATED
+
+```{r}
+# Taxonomy
+tax = readRDS('../Data/pilot_metagenomic_phyloseq_g4h.rds')
+tax_names = sample_names(tax)
+tax_total = sample_sums(tax)
+ruth_total = tax %>% subset_taxa(str_detect(Genus, 'Ruthenibacterium')) %>% sample_sums()
+ruth_pct = ruth_total/tax_total
+tax_table = tibble(Sample = tax_names,
+                   tax_total = tax_total,
+                   ruth_total = ruth_total,
+                   ruth_pct = ruth_pct) 
+
+# Functions
+key = read_csv("~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/sample_key.csv") %>% rename(Sample=old)
+path = data.table::fread('../Data/humann_exports_mgx_g4h/mgx_pathabundance_stratified.tsv', check.names = F) %>% 
+  filter(!str_detect(`# Pathway`, 'UNINTEGRATED'))
+path_names = colnames(path)[-1] %>% sapply(function(x)str_split(x, pattern = "_",)[[1]][1] %>% as.numeric())
+path_total = colSums(path[,2:ncol(path)])
+ruth_path_total = path %>% filter(str_detect(`# Pathway`, 'Ruthenibacterium')) %>% 
+  select(-`# Pathway`) %>% 
+  colSums()
+ruth_path_pct = ruth_path_total/path_total
+path_table = tibble(Sample = path_names,
+                   path_total = path_total,
+                   ruth_path_total = ruth_path_total,
+                   ruth_path_pct = ruth_path_pct) %>% 
+  left_join(key) %>% 
+  select(-Sample) %>% 
+  rename(Sample=new)
+
+# Combine
+comb_filt = full_join(tax_table, path_table)
+```
+
+# PD - without UNINTEGRATED (this is all that's available)
+
+```{r}
+# Taxonomy
+tax = readRDS('/Users/armetcal/Library/CloudStorage/OneDrive-UBC/Grad School/Data/HUMAN COHORT/Metcalfe-Roach_PD_Micro_2024 - Revision/Reference Files/taxonomy_phyloseq.rds')
+tax_names = sample_names(tax)
+tax_total = sample_sums(tax)
+ruth_total = tax %>% subset_taxa(str_detect(Genus, 'Ruthenibacterium')) %>% sample_sums()
+ruth_pct = ruth_total/tax_total
+tax_table_pd = tibble(Sample = tax_names,
+                   tax_total = tax_total,
+                   ruth_total = ruth_total,
+                   ruth_pct = ruth_pct) 
+
+# Functions
+path = readRDS('/Users/armetcal/Library/CloudStorage/OneDrive-UBC/Grad School/Data/HUMAN COHORT/Metcalfe-Roach_PD_Micro_2024 - Revision/Reference Files/functional_phyloseq_metacyc_stratified.rds')
+path_names = sample_names(path)
+path_total = sample_sums(path)
+ruth_path_total = path %>% subset_taxa(str_detect(taxon, 'Ruthenibacterium')) %>% sample_sums()
+ruth_path_pct = ruth_path_total/path_total
+path_table_pd = tibble(Sample = path_names,
+                   path_total = path_total,
+                   ruth_path_total = ruth_path_total,
+                   ruth_path_pct = ruth_path_pct) 
+
+# Combine
+comb_pd = full_join(tax_table_pd, path_table_pd)
+```
+
+# Plot
+```{r}
+comb_comb = comb_filt %>% mutate(Cohort='CMMI') %>% 
+  full_join(comb_pd %>% mutate(Cohort='PD'))
+
+# stats
+print('Prop. of counts that are Ruthenibacterium')
+print('PD Cohort:'); summary(comb_pd$ruth_pct[comb_pd$ruth_pct>0])
+print('CMMI Cohort:'); summary(comb_filt$ruth_pct[comb_filt$ruth_pct>0])
+
+print('Total counts that are Ruthenibacterium')
+print('PD Cohort:'); summary(comb_pd$ruth_total[comb_pd$ruth_pct>0])
+print('CMMI Cohort:'); summary(comb_filt$ruth_pct[comb_filt$ruth_pct>0])
+
+# Plots
+comb_comb %>% 
+  filter(ruth_total>0) %>% 
+  ggplot(aes(tax_total,100*ruth_pct,col=Cohort)) +
+  geom_point() +
+  geom_smooth(method='loess') +
+  scale_y_log10() +
+  scale_x_log10() +
+  theme_minimal(base_size=18) +
+  xlab('Sample Depth') +
+  ylab('% Ruthenibacterium')
+
+comb_comb %>% 
+  filter(ruth_total>0) %>% 
+  ggplot(aes(tax_total,100*ruth_total,col=Cohort)) +
+  geom_point() +
+  geom_smooth(method='loess') +
+  scale_y_log10() +
+  scale_x_log10() +
+  theme_minimal(base_size=18) +
+  xlab('Sample Depth') +
+  ylab('Ruthenibacterium Counts')
+
+comb_comb %>% 
+  filter(ruth_total>0) %>% 
+  mutate(fun_avail = ruth_path_total>0) %>% 
+  ggplot(aes(tax_total,100*ruth_total,fill=Cohort)) +
+  geom_point(aes(col=fun_avail)) +
+  geom_smooth(method='loess',col='black') +
+  scale_y_log10() +
+  scale_x_log10() +
+  theme_minimal(base_size=18) +
+  xlab('Sample Depth') +
+  ylab('Ruthenibacterium Counts')
+```
+

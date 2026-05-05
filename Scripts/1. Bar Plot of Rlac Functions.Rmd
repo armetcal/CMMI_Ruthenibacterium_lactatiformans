@@ -1,0 +1,69 @@
+---
+title: "Functional Bar Plot"
+author: "Avril Metcalfe-Roach"
+output: html_document
+---
+
+```{r LOAD_AND_FILTER}
+library(tidyverse)
+library(vegan)
+
+# Change as needed - I can't upload the data to Github for privacy reasons
+my_data_location = "~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/humann_exports_mgx_g4h"
+
+# Load stratified dataset
+mgx = data.table::fread(paste0(my_data_location,'/mgx_pathabundance_stratified.tsv'))
+
+# Select only the rows with relevant functions
+mgx_filt = mgx %>% 
+  filter(str_detect(`# Pathway`, 's__Ruthenibacterium_lactatiformans')) %>% 
+  filter(!str_detect(`# Pathway`, 'UNINTEGRATED')) %>%
+  mutate(`# Pathway` = sapply(.$`# Pathway`, function(x) str_split(x,'[|]g__Ruthenibacterium[.]')[[1]][1])) %>% 
+  column_to_rownames('# Pathway')
+
+# Convert to relative abundance
+mgx_rel = mgx_filt %>% 
+  mutate(across(where(is.numeric), ~ . / sum(.)))
+
+table(colSums(mgx_rel)) # Check it worked: everything adds up to ~1 
+
+# Remove columns with only NaNs
+mgx_rel_filt = mgx_rel %>% 
+  select(where(~!all(is.na(.))))
+```
+
+```{r CLUSTERING}
+# Which samples are more similar to each other?
+# Calculate distance matrix and hierarchical clustering
+
+# SAMPLE CLUSTERING
+dist_matrix <- vegdist(t(mgx_rel_filt), method = "bray")
+hc <- hclust(dist_matrix, method = "average")
+
+# FUNCTIONAL CLUSTERING
+dist_matrix_func <- vegdist(mgx_rel_filt, method = "bray")
+hc_func <- hclust(dist_matrix_func, method = "average")
+
+# Reorder data based on the clustering
+data_reordered <- mgx_rel_filt[hc_func$order, hc$order] %>% 
+  data.frame() %>% 
+  rownames_to_column(var = "feature") %>%
+  pivot_longer(cols = 2:ncol(.), names_to = "Sample", values_to = "RelativeAbundance") %>% 
+  mutate(feature = factor(feature, levels = unique(feature)),
+         Sample = factor(Sample, levels = unique(Sample)))
+```
+
+```{r PLOT}
+ggplot(data_reordered, aes(x = Sample, y = RelativeAbundance, fill = feature)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Sample",
+       y = "Relative Abundance",
+       fill = "Function") +
+  theme_minimal(base_size=18) +
+  theme(legend.position = "none") + # Hide legend for better visualization
+  theme(axis.text.x = element_blank()) +
+  ylab("Pathway Abundance")
+
+ggsave("../Outputs/1. Functional bar plot - clustered.png", width = 8, height = 4)
+```
+

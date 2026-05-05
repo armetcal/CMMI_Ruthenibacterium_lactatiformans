@@ -1,0 +1,225 @@
+---
+title: "Ruthenibacterium functional comparison"
+author: "Avril Metcalfe-Roach"
+date: "2026-03-10"
+output: html_document
+---
+
+Pulling all the ruthenibacterium functions to see what differentiates it from other taxa.
+CURRENTLY REMOVING THE UNINTEGRATED COUNTS EVEN IF IT'S ANNOTATED AS RUTHENIBACTERIUM
+
+```{r}
+library(tidyverse)
+
+path = read.delim('Data/humann_exports_mgx_g4h/mgx_pathabundance_stratified.tsv', check.names = F)
+path_sep = path %>% 
+  separate(`# Pathway`, into = c('feature', 'taxon'), sep = '\\|')
+  
+
+ruth = path_sep %>% filter(str_detect(taxon, 'Ruthenibacterium'),
+                           feature !='UNINTEGRATED')
+unique(ruth$taxon) # only ruthenibacterium lactatiformans present, good
+```
+Prevalence of Ruthenibacterium lactatiformans in cohort is 68%.
+
+```{r}
+ruth_prev = table(Present=colSums(ruth[,3:ncol(ruth)]) > 0) / (ncol(ruth)-2)
+ruth_prev %>% round(2) # 68% prevalent
+```
+
+## Abundance-related analysis
+Determining the functional spreads of Ruthenibacterium lactatiformans across the cohort.
+```{r}
+# First, we'll transform the counts into relative abundance per sample
+ruth_rel = ruth
+ruth_rel[,3:ncol(ruth_rel)] = apply(ruth_rel[3:ncol(ruth_rel)], 2, function(x) x / sum(x, na.rm = TRUE))
+
+# Let's remove all columns that have only NAN values (these don't have the taxon present)
+w = which(colSums(is.na(ruth_rel)) == nrow(ruth_rel))
+ruth_rel[,w] %>% head() # works as intended
+ruth_rel = ruth_rel[,-w]
+
+# Now we can calculate the mean relative abundance of each function across the samples where Ruthenibacterium lactatiformans is present
+ruth_rel_pivot = ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  group_by(feature) %>%
+  summarise(MeanRelativeAbundance = mean(RelativeAbundance, na.rm = TRUE),
+            SDRelativeAbundance = sd(RelativeAbundance, na.rm = TRUE)) %>%
+  mutate(CVRelativeAbundance = abs(SDRelativeAbundance / MeanRelativeAbundance)) %>%
+  arrange(desc(CVRelativeAbundance))
+head(ruth_rel_pivot) # A few pathways that are somewhat variable across the samples
+
+# Coefficient of variation bar plot
+ggplot(ruth_rel_pivot, 
+       aes(x = reorder(feature, CVRelativeAbundance), y = CVRelativeAbundance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Coefficient of Variation") +
+  theme_minimal()
+
+# Now try the same thing, but boxplots
+ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  mutate(feature = factor(feature, levels = rev(unique(ruth_rel_pivot$feature)))) %>%
+  ggplot(aes(x = feature, y = RelativeAbundance)) +
+  geom_boxplot(fill='lightgreen') +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Relative Abundance") +
+  theme_minimal()
+
+
+# Functional bar plot, cluster the samples and functions according to their similarity
+library(vegan)
+temp = ruth_rel[,3:ncol(ruth_rel)] %>% `rownames<-`(ruth_rel$feature)
+
+# SAMPLE CLUSTERING
+dist_matrix <- vegdist(t(temp), method = "bray")
+hc <- hclust(dist_matrix, method = "average")
+# FUNCTIONAL CLUSTERING
+dist_matrix_func <- vegdist(temp, method = "bray")
+hc_func <- hclust(dist_matrix_func, method = "average")
+
+# Reorder data based on the clustering
+data_reordered <- temp[hc_func$order, hc$order] %>% 
+  data.frame() %>% 
+  rownames_to_column(var = "feature") %>%
+  pivot_longer(cols = 2:ncol(.), names_to = "Sample", values_to = "RelativeAbundance") %>% 
+  mutate(feature = factor(feature, levels = unique(feature)),
+         Sample = factor(Sample, levels = unique(Sample)))
+
+
+# Barplot clustered by similarity
+ggplot(data_reordered, aes(x = Sample, y = RelativeAbundance, fill = feature)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Sample",
+       y = "Relative Abundance",
+       fill = "Function") +
+  theme_minimal() +
+  theme(legend.position = "none") + # Hide legend for better visualization
+  theme(axis.text.x = element_blank())
+```
+
+## Prevalence-related analysis
+
+```{r}
+prev = data_reordered %>% 
+  mutate(Present = RelativeAbundance > 0) %>%
+  group_by(feature) %>%
+  summarise(Prevalence = mean(Present, na.rm = TRUE)) %>%
+  mutate(feature = factor(feature, levels = rev(unique(ruth_rel_pivot$feature))))
+
+ggplot(prev, aes(x = feature, y = Prevalence)) +
+  geom_bar(stat = "identity", fill = "red3") +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Prevalence") +
+  theme_minimal()
+
+ggplot(prev %>% mutate(feature = factor(feature, levels = rev(unique(ruth_rel_pivot_present$feature)))), 
+       aes(x = feature, y = Prevalence)) +
+  geom_bar(stat = "identity", fill = "red3") +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Prevalence") +
+  theme_minimal()
+```
+
+# Let's look at abundance again, but we will only average across the samples where the function is present
+# to get a better idea of the abundance when it's actually there
+
+```{r}
+ruth_rel_pivot_present = ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  group_by(feature) %>%
+  summarise(MeanRelativeAbundance = mean(RelativeAbundance[RelativeAbundance > 0], na.rm = TRUE),
+            SDRelativeAbundance = sd(RelativeAbundance[RelativeAbundance > 0], na.rm = TRUE)) %>%
+  mutate(CVRelativeAbundance = abs(SDRelativeAbundance / MeanRelativeAbundance)) %>%
+  arrange(desc(CVRelativeAbundance))
+
+ggplot(ruth_rel_pivot_present, 
+       aes(x = reorder(feature, CVRelativeAbundance), y = CVRelativeAbundance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Coefficient of Variation (when present)") +
+  theme_minimal()
+
+# Boxplot of abundances
+ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  filter(RelativeAbundance > 0) %>%
+  mutate(feature = factor(feature, levels = rev(unique(ruth_rel_pivot_present$feature)))) %>%
+  ggplot(aes(x = feature, y = RelativeAbundance)) +
+  geom_boxplot(fill='lightgreen') +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Relative Abundance (when present)") +
+  theme_minimal()
+
+# Now let's look at the relationship between prevalence and abundance for each function
+prev_abund = prev %>%
+  left_join(ruth_rel_pivot_present, by = "feature")
+ggplot(prev_abund, aes(y = Prevalence, x = MeanRelativeAbundance)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(y = "Prevalence",
+       x = "Mean Relative Abundance (when present)") +
+  theme_minimal()
+
+# Coefficient of variation vs mean relative abundance
+ggplot(prev_abund, aes(x = MeanRelativeAbundance, y = CVRelativeAbundance)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(x = "Mean Relative Abundance (when present)",
+       y = "Coefficient of Variation (when present)") +
+  theme_minimal()
+```
+
+# Are key pathways present in other taxa?
+
+Testing the "DTDPRHAMSYN-PWY: dTDP-&beta;-L-rhamnose biosynthesis" pathway, which is one of the most abundant YET low prevalence
+
+```{r}
+# Convert to relative abundance
+path_rel = path_sep %>% filter(feature != 'UNINTEGRATED')
+path_rel[,3:ncol(path_rel)] = apply(path_rel[3:ncol(path_rel)], 2, function(x) x / sum(x, na.rm = TRUE))
+
+# Filter for pathway of interest
+key_pathway = path_rel %>% 
+  filter(feature == "DTDPRHAMSYN-PWY: dTDP-&beta;-L-rhamnose biosynthesis")
+
+# Prevalence of pathway
+key_pathway_prev = table(Present=colSums(key_pathway[,3:ncol(key_pathway)]) > 0) / (ncol(key_pathway)-2)
+key_pathway_prev # Everyone has it
+
+# boxplot of abundance
+boxplot(colSums(key_pathway[,3:ncol(key_pathway)]), 
+        main = "Relative Abundance of DTDPRHAMSYN-PWY", 
+        ylab = "Relative Abundance", col = "lightblue")
+ggplot(aes(x = 1, y = colSums(key_pathway[,3:ncol(key_pathway)]))) +
+  geom_boxplot(fill='lightblue') +
+  labs(x = "Sample",
+       y = "Relative Abundance of DTDPRHAMSYN-PWY") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank())
+
+# Check which taxa contribute the most reads per sample
+most_reads = path_sep %>% 
+  filter(feature == "DTDPRHAMSYN-PWY: dTDP-&beta;-L-rhamnose biosynthesis",
+         taxon != 'unclassified') %>%
+  pivot_longer(cols = 3:ncol(.), names_to = "Sample", values_to = "Abundance") %>%
+  group_by(Sample) %>%
+  mutate(RelativeAbundance = Abundance / sum(Abundance, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  arrange(desc(RelativeAbundance)) %>%
+  group_by(Sample) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  select(Sample, taxon, RelativeAbundance) %>%
+  filter(RelativeAbundance > 0)
+
+most_reads %>% head() # 
+```
+

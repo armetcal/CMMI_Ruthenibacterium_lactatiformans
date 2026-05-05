@@ -1,0 +1,379 @@
+---
+title: "Ruthenibacterium - unique functions"
+author: "Avril Metcalfe-Roach"
+date: "2026-03-11"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+
+# Load the unique proteins identified in a different pipeline
+# Not using the filtered version - those are common across the whole taxon, we want the variable ones too
+unique_mgx = read.delim('Data/unique_proteins_g4h/mgx_uniprot50_in_one_taxon_only.tsv')
+unique_mtx = read.delim('Data/unique_proteins_g4h/mtx_uniprot50_in_one_taxon_only.tsv')
+
+# Filter for Ruthenibacterium
+ruth_mgx = unique_mgx %>% filter(str_detect(taxon,'Ruthenibacterium'))
+ruth_mtx = unique_mtx %>% filter(str_detect(taxon,'Ruthenibacterium'))
+
+# Now we have lists of UniRef50 IDs - need to annotate them.
+all_mgx = data.table::fread('Data/humann_exports_mgx_g4h/mgx_genefamilies_unstratified.tsv')
+all_filt = all_mgx %>% filter(`# Gene Family` %in% c(ruth_mgx$uniprot)) %>% 
+  mutate(`# Gene Family` = sapply(.$`# Gene Family`, function(x) str_split(x,'[:]')[[1]][1])) %>% 
+  mutate(`# Gene Family` = str_replace_all(.$`# Gene Family`, 'UniRef50_', ''))
+
+write.table(all_filt$`# Gene Family`, 'Data/unique_proteins_g4h/ruth_mgx_uniref50_ids.tsv', row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+Use this website to annotate the genes: https://www.uniprot.org/id-mapping 
+
+```{r}
+# Load the annotated genes
+annot = readxl::read_xlsx('Data/Ruthenibacterium - unique uniref50 annotations.xlsx',sheet='No unknown or deleted')
+
+# Load the gene counts
+gene = data.table::fread('Data/humann_exports_mgx_g4h/mgx_genefamilies_unstratified.tsv') %>% 
+  mutate(across(where(is.numeric), ~ . / sum(.))) %>%
+  mutate(`# Gene Family` = sapply(.$`# Gene Family`, function(x) str_split(x,'[:]')[[1]][1])) %>% 
+  mutate(`# Gene Family` = str_replace_all(.$`# Gene Family`, 'UniRef50_', ''))
+
+# Filter and annotate
+gene_filt = gene %>% 
+  filter(`# Gene Family` %in% c(annot$From)) %>% 
+  rename(feature = `# Gene Family`) 
+
+gene_prev = gene_filt %>% 
+  pivot_longer(cols = -feature, names_to = 'sample', values_to = 'abundance') %>% 
+  group_by(feature) %>% 
+  summarise(prev = sum(abundance > 0)) %>%  # Number of people with R. lac
+  filter(prev>3) # Present in more than 3 people
+```
+
+
+```{r}
+# Load phyloseq objct
+ps = readRDS('Data/pilot_metagenomic_phyloseq_g4h.rds')
+sam = data.frame(ps@sam_data) %>% 
+  rownames_to_column('Sample')
+
+# Fix non-real values in table
+sam[sam==-7] = NA # -7 is NA
+sam[sam==9] = NA # 9 = 'Don't know'
+
+# Remove columns in sam where there is almost no variance
+sam_filt = sam %>% select(where(~n_distinct(.[!is.na(.)]) > 1))
+# Remove variables where there is only one person with a different value than everyone else
+list_to_remove = sam_filt %>% select(where(~n_distinct(.[!is.na(.)]) == 2)) %>% 
+  select(-where(~all(table(.) > 3))) # only 1-4 people have a different value
+sam_filt = sam_filt %>% select(-all_of(colnames(list_to_remove)))
+
+
+# Fix names, add metadata ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# sample key
+key <- read_csv("~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/sample_key.csv")
+
+gene_annot = gene_filt %>%
+  pivot_longer(cols = -feature, names_to = 'Sample', values_to = 'abundance') %>%
+  mutate(Sample = sapply(.$Sample,function(x) str_split(x, pattern = "_",)[[1]][1] %>% as.numeric())) %>% 
+   left_join(key %>% rename(Sample=old)) %>%
+  select(-Sample) %>%
+  rename(Sample=new) %>% 
+  left_join(sam_filt)
+
+# Correlate abundances with outcomes of interest
+cor_gene = gene_annot %>% 
+  # Select numeric columns, feature, abundance, and Sample
+  select(feature, abundance, Sample,all_of(colnames(gene_annot)[sapply(gene_annot, is.numeric)])) %>%
+  pivot_longer(cols = -c(feature:Sample), 
+               names_to = 'variable', values_to = 'value') %>%
+  filter(!is.na(value)) %>%
+  group_by(feature,variable) %>% 
+  summarise(n = n(),
+            cor_var = cor(abundance, value, method = 'spearman'),
+            box_var = kruskal.test(abundance ~ as.character(value))$p.value,
+            p_var = cor.test(abundance, value, method = 'spearman')$p.value) %>%
+  ungroup() 
+
+cor_filt = cor_gene %>% filter(n>5, box_var < 0.05) %>% 
+   group_by(feature) %>% 
+  mutate(n_feature = n()) %>%
+  ungroup() %>%
+  group_by(variable) %>%
+  mutate(n_variable = n()) %>%
+   ungroup()
+
+
+table(cor_filt$variable) %>% sort(decreasing = TRUE)
+table(cor_filt$feature) %>% sort(decreasing = TRUE) 
+```
+
+# Let's take all the CMMI_HS_BOWEL questions and correlate them with the unique proteins
+
+```{r}
+temp = sam %>% select(Sample,contains('CMMI_HS_BOWEL')) %>% 
+  pivot_longer(cols = -Sample, names_to = 'variable', values_to = 'value') %>%
+  group_by(variable, value) %>%
+  summarise(n = n()) %>%
+  ungroup() %>% 
+  pivot_wider(names_from = value, values_from = n, values_fill = 0) %>% 
+  select(-`NA`)
+temp$`4` = 0
+
+# Add descriptions
+desc = readxl::read_xlsx('Data/CMMI_Healthy Ager Pilot Data_ALL VARIABLES_Sep 18 2025.xlsx', sheet = 'Data Dictionary') %>% 
+  select(variable_name, description) %>% 
+  rename(variable = variable_name) %>% 
+  filter(variable %in% temp$variable) %>% 
+  right_join(temp) %>%
+  select(variable, description, everything())
+
+bowel = sam %>% select(contains('CMMI_HS_BOWEL')) %>% colnames() %>% 
+  setdiff("CMMI_HS_BOWEL_1")
+
+stats = gene_annot %>% select(feature, abundance, Sample, all_of(bowel)) %>%
+  pivot_longer(cols = -c(feature:Sample), names_to = 'variable', values_to = 'value') %>%
+  filter(!is.na(value)) %>%
+  group_by(feature, variable) %>%
+  summarise(cor = kruskal.test(abundance ~ as.character(value))$statistic,
+            pval = kruskal.test(abundance ~ as.character(value))$p.value) %>%
+  ungroup() %>% 
+  filter(!is.nan(cor))
+
+# Plot these results as a heatmap
+plot_data = stats %>% left_join(desc) %>% 
+  mutate(feature = factor(feature, levels = rev(unique(cor_filt$feature)))) %>%
+  mutate(variable = factor(variable, levels = unique(desc$variable))) %>% 
+  # Not sure why there are NAs - figure out later
+  filter(!is.na(feature))
+
+ggplot(plot_data, aes(x = variable, y = feature, fill = -log10(pval))) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(x = "Variable", y = "Feature", fill = "-log10(p-value)") +
+  theme_minimal(base_size=18) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# P VALUES
+plot_wide = plot_data %>% select(variable,feature,pval) %>% 
+  mutate(pval = -log10(pval)) %>% 
+  pivot_wider(names_from = variable, values_from = pval) %>% 
+  column_to_rownames('feature')
+
+# Generate clustered heatmap with dendrogram on both axes
+library(pheatmap)
+pheatmap(
+  plot_wide,
+  color = colorRampPalette(c("white", "red"))(100),
+  scale = "none",               # Don't scale the data since -log10(p) is already interpretable
+  cluster_cols = T,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  show_rownames = TRUE,
+  show_colnames = TRUE
+)
+
+
+# P VALUES - FILT
+plot_wide = plot_data %>% select(variable,feature,pval) %>% 
+  filter(pval < 0.05) %>% 
+  mutate(pval = -log10(pval)) %>% 
+  pivot_wider(names_from = variable, values_from = pval) %>% 
+  column_to_rownames('feature')
+plot_wide[is.na(plot_wide)] = 0 # Set NA values to 0 for plotting
+
+# Generate clustered heatmap with dendrogram on both axes
+library(pheatmap)
+pheatmap(
+  plot_wide,
+  color = colorRampPalette(c("white", "red"))(100),
+  scale = "none",               # Don't scale the data since -log10(p) is already interpretable
+  cluster_cols = T,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  show_rownames = TRUE,
+  show_colnames = TRUE
+)
+
+sig = plot_wide %>% 
+  arrange(desc(CMMI_HS_BOWEL_8)) %>% 
+  slice(1:20) %>% row.names()
+sig_annot = annot %>% filter(From %in% sig)
+```
+
+```{r}
+# Plot the top 5 features with CMMI_HS_BOWEL_8
+to_plot = plot_data %>% filter(variable == 'CMMI_HS_BOWEL_8',
+                               feature %in% sig) %>% 
+  arrange(abs(cor)) %>% pull(feature)
+for (f in to_plot) {
+  p <- gene_annot %>% filter(feature == !!f) %>% 
+    filter(!is.na(CMMI_HS_BOWEL_8)) %>%
+    mutate(CMMI_HS_BOWEL_8 = ifelse(CMMI_HS_BOWEL_8 == 0, 'No', 'Yes')) %>%
+    ggplot(aes(x = as.character(CMMI_HS_BOWEL_8), y = abundance)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(width = 0.2, height=0) +
+    ggpubr::stat_compare_means(method = "wilcox.test", comparisons = list(c('Yes','No'))) +
+    labs(#title = paste("Abundance of", f, "by Bowel Movement Regularity"),
+         x = "Mucus/slime present",
+         y = f) +
+    theme_minimal(base_size=18)
+  
+  print(p)
+}
+```
+
+
+# Let's take all the cardiovascular questions and correlate them with the unique proteins
+
+```{r}
+cardio = c(
+  'CMMI_DIS_CARDIO_EVER',
+  'CMMI_DIS_HBP_EVER',
+  'CMMI_DIS_HIGH_CHOL_EVER',
+  'CMMI_DIS_MI_EVER',
+  'CMMI_DIS_HF_EVER',
+  'CMMI_DIS_CHD_EVER',
+  'CMMI_DIS_ATRIAL_EVER',
+  'CMMI_DIS_ARRHYTHMIA_EVER',
+  'CMMI_DIS_ANGINA_EVER',
+  'CMMI_DIS_HM_EVER',
+  'CMMI_DIS_VHD_EVER',
+  'CMMI_DIS_THROMBO_EVER',
+  'CMMI_DIS_HEMO_EVER'
+)
+temp = sam %>% select(Sample,all_of(cardio)) %>% 
+  filter(!is.na(CMMI_DIS_CARDIO_EVER)) %>%
+  pivot_longer(cols = -Sample, names_to = 'variable', values_to = 'value') %>%
+  group_by(variable, value) %>%
+  summarise(n = n()) %>%
+  ungroup() %>% 
+  pivot_wider(names_from = value, values_from = n, values_fill = 0)
+
+# Add descriptions
+desc = readxl::read_xlsx('Data/CMMI_Healthy Ager Pilot Data_ALL VARIABLES_Sep 18 2025.xlsx', sheet = 'Data Dictionary') %>% 
+  select(variable_name, description) %>% 
+  rename(variable = variable_name) %>% 
+  filter(variable %in% temp$variable) %>% 
+  right_join(temp) %>%
+  select(variable, description, everything())
+
+to_test = temp %>% filter(`1` > 1) %>% pull(variable)
+
+stats = gene_annot %>% select(Sample,feature, abundance) %>%
+  left_join(sam %>% select(Sample, all_of(to_test))) %>%
+  filter(!is.na(CMMI_DIS_CARDIO_EVER)) %>%
+  pivot_longer(cols = -c(Sample:abundance), names_to = 'variable', values_to = 'value') %>%
+  filter(!is.na(value)) %>%
+  group_by(feature, variable) %>%
+  summarise(cor = wilcox.test(formula = abundance ~ as.character(value))$statistic,
+            pval = wilcox.test(formula = abundance ~ as.character(value))$p.value) %>%
+  ungroup()
+
+# Plot these results as a heatmap
+plot_data = stats %>% left_join(desc) %>% 
+  mutate(feature = factor(feature, levels = rev(unique(cor_filt$feature)))) %>%
+  mutate(variable = factor(variable, levels = unique(desc$variable))) %>% 
+  # Not sure why there are NAs - figure out later
+  filter(!is.na(feature))
+
+# P VALUES
+plot_wide = plot_data %>% select(variable,feature,pval) %>% 
+  mutate(pval = -log10(pval)) %>% 
+  pivot_wider(names_from = variable, values_from = pval) %>% 
+  column_to_rownames('feature') %>% 
+  filter(!is.nan(rowSums(.))) # Remove rows where all p-values are NA or 0
+
+# Generate clustered heatmap with dendrogram on both axes
+library(pheatmap)
+pheatmap(
+  plot_wide,
+  color = colorRampPalette(c("white", "blue"))(100),
+  scale = "none",               # Don't scale the data since -log10(p) is already interpretable
+  cluster_cols = T,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  show_rownames = TRUE,
+  show_colnames = TRUE
+)
+
+
+# P VALUES - FILT
+plot_wide = plot_data %>% select(variable,feature,pval) %>% 
+  filter(pval < 0.05) %>% 
+  mutate(pval = -log10(pval)) %>% 
+  pivot_wider(names_from = variable, values_from = pval) %>% 
+  column_to_rownames('feature')
+plot_wide[is.na(plot_wide)] = 0 # Set NA values to 0 for plotting
+
+# Generate clustered heatmap with dendrogram on both axes
+library(pheatmap)
+pheatmap(
+  plot_wide,
+  color = colorRampPalette(c("white", "blue"))(100),
+  scale = "none",               # Don't scale the data since -log10(p) is already interpretable
+  cluster_cols = T,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  show_rownames = TRUE,
+  show_colnames = TRUE
+)
+
+sig = plot_wide %>% 
+  arrange(desc(CMMI_DIS_HIGH_CHOL_EVER)) %>% 
+  slice(1:6) %>% row.names()
+sig_annot = annot %>% filter(From %in% sig)
+```
+
+```{r}
+# Plot the top 5 features with CMMI_DIS_HIGH_CHOL_EVER
+to_plot = plot_data %>% filter(variable == 'CMMI_DIS_HIGH_CHOL_EVER',
+                               feature %in% sig) %>% 
+  arrange(abs(cor)) %>% pull(feature)
+for (f in sig) {
+  # f = sig[1]
+  p <- gene_annot %>% filter(feature == !!f) %>% 
+    filter(!is.na(CMMI_DIS_HIGH_CHOL_EVER)) %>%
+    mutate(CMMI_DIS_HIGH_CHOL_EVER = ifelse(CMMI_DIS_HIGH_CHOL_EVER == 0, 'No', 'Yes')) %>%
+    ggplot(aes(x = as.character(CMMI_DIS_HIGH_CHOL_EVER), y = abundance)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(width = 0.2, height=0) +
+    ggpubr::stat_compare_means(method = "wilcox.test", comparisons = list(c('Yes','No'))) +
+    labs(#title = paste("Abundance of", f, "by Bowel Movement Regularity"),
+         x = "High cholesterol (ever)",
+         y = f) +
+    theme_minimal(base_size=18)
+  
+  print(p)
+}
+```
+
+
+```{r}
+# Look at the top features associated with food allergy
+to_plot = cor_filt %>% filter(variable == 'CMMI_HS_FOOD_ALLERGIES') %>% arrange(abs(box_var)) %>% pull(feature) 
+
+# Plot food allergies vs these functions
+for (f in to_plot) {
+  p <- gene_annot %>% filter(feature == !!f) %>% 
+    filter(!is.na(CMMI_HS_FOOD_ALLERGIES)) %>%
+    mutate(CMMI_HS_FOOD_ALLERGIES = ifelse(CMMI_HS_FOOD_ALLERGIES == 1, 'Yes', 'No')) %>%
+    ggplot(aes(x = CMMI_HS_FOOD_ALLERGIES, y = abundance)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.2) +
+    ggpubr::stat_compare_means(method = "wilcox.test", comparisons = list(c('Yes','No'))) +
+    labs(title = paste("Abundance of", f, "by Food Allergy Status"),
+         x = "Food Allergy Status",
+         y = "Relative Abundance") +
+    theme_minimal(base_size=18)
+  
+  print(p)
+}
+
+annot %>% filter(From %in% to_plot) %>% select(From, `Protein names`) %>% mutate(From = factor(From, levels = to_plot)) %>% arrange(From)
+```
+

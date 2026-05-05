@@ -1,0 +1,164 @@
+---
+title: "Ruthenibacterium functional comparison"
+author: "Avril Metcalfe-Roach"
+date: "2026-03-10"
+output: html_document
+---
+
+Pulling all the ruthenibacterium functions to see what differentiates it from other taxa.
+CURRENTLY REMOVING THE UNINTEGRATED COUNTS EVEN IF IT'S ANNOTATED AS RUTHENIBACTERIUM
+
+```{r}
+library(tidyverse)
+path = data.table::fread('../Data/humann_exports_mgx_g4h/mgx_genefamilies_stratified.tsv', check.names = F)
+path_sep = path %>% 
+  separate(`# Gene Family`, into = c('feature', 'taxon'), sep = '\\|')
+  
+
+ruth = path_sep %>% filter(str_detect(taxon, 'Ruthenibacterium'),
+                           feature !='UNINTEGRATED')
+unique(ruth$taxon) # only ruthenibacterium lactatiformans present, good
+```
+Prevalence of Ruthenibacterium lactatiformans in cohort is 68%.
+
+```{r}
+ruth_prev = table(Present=colSums(ruth[,3:ncol(ruth)]) > 0) / (ncol(ruth)-2)
+ruth_prev %>% round(2) # 68% prevalent
+```
+
+## Abundance-related analysis
+Determining the functional spreads of Ruthenibacterium lactatiformans across the cohort.
+```{r}
+# First, we'll transform the counts into relative abundance per sample
+ruth_rel = ruth
+ruth_rel[,3:ncol(ruth_rel)] = apply(ruth_rel[3:ncol(ruth_rel)], 2, function(x) x / sum(x, na.rm = TRUE))
+
+# Let's remove all columns that have only NAN values (these don't have the taxon present)
+w = which(colSums(is.na(ruth_rel)) == nrow(ruth_rel))
+ruth_rel[,w] %>% head() # works as intended
+ruth_rel = ruth_rel[,-w]
+
+# Now we can calculate the mean relative abundance of each function across the samples where Ruthenibacterium lactatiformans is present
+ruth_rel_pivot = ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  group_by(feature) %>%
+  summarise(MeanRelativeAbundance = mean(RelativeAbundance, na.rm = TRUE),
+            SDRelativeAbundance = sd(RelativeAbundance, na.rm = TRUE)) %>%
+  mutate(CVRelativeAbundance = abs(SDRelativeAbundance / MeanRelativeAbundance)) %>%
+  arrange(desc(CVRelativeAbundance))
+head(ruth_rel_pivot) # A few pathways that are somewhat variable across the samples
+
+# Too many hits. 
+# Let's take things that are:
+#   1. at least 1/1000 of the total ruthenibacterium reads.
+#   2. a CV of at least 2.
+ruth_filt = ruth_rel_pivot %>% 
+  filter(MeanRelativeAbundance > 0.001) %>%
+  filter(CVRelativeAbundance > 2) %>%
+  arrange(desc(CVRelativeAbundance))
+
+# Coefficient of variation bar plot
+ggplot(ruth_filt, 
+       aes(x = reorder(feature, CVRelativeAbundance), y = CVRelativeAbundance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "UniRef50, >0.1% rel abundance, CV > 2",
+       x = "Function",
+       y = "Coefficient of Variation") +
+  theme_minimal()
+
+# Now try the same thing, but boxplots
+ruth_rel %>%
+  filter(feature %in% ruth_filt$feature) %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  mutate(feature = factor(feature, levels = rev(unique(ruth_filt$feature)))) %>%
+  ggplot(aes(x = feature, y = RelativeAbundance)) +
+  geom_boxplot(fill='lightgreen') +
+  coord_flip() +
+  labs(title = "UniRef50, >0.1% rel abundance, CV > 2",
+       x = "Function",
+       y = "Relative Abundance") +
+  theme_minimal()
+```
+
+## Prevalence-related analysis
+
+```{r}
+prev = ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>% 
+  mutate(Present = RelativeAbundance > 0) %>%
+  group_by(feature) %>%
+  summarise(Prevalence = mean(Present, na.rm = TRUE)) %>%
+  ungroup() #%>% 
+  # filter(feature %in% ruth_filt$feature) %>%
+  # mutate(feature = factor(feature, levels = rev(unique(ruth_filt$feature))))
+
+ggplot(prev, aes(x = feature, y = Prevalence)) +
+  geom_bar(stat = "identity", fill = "red3") +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Prevalence") +
+  theme_minimal()
+
+ggplot(prev %>% 
+         mutate(feature = factor(feature, levels = rev(unique(ruth_rel_pivot_present$feature)))), 
+       aes(x = feature, y = Prevalence)) +
+  geom_bar(stat = "identity", fill = "red3") +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Prevalence") +
+  theme_minimal()
+```
+
+# Let's look at abundance again, but we will only average across the samples where the function is present
+# to get a better idea of the abundance when it's actually there
+
+```{r}
+ruth_rel_pivot_present = ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  # filter(feature %in% ruth_filt$feature) %>%
+  group_by(feature) %>%
+  summarise(MeanRelativeAbundance = mean(RelativeAbundance[RelativeAbundance > 0], na.rm = TRUE),
+            SDRelativeAbundance = sd(RelativeAbundance[RelativeAbundance > 0], na.rm = TRUE)) %>%
+  mutate(CVRelativeAbundance = abs(SDRelativeAbundance / MeanRelativeAbundance)) %>%
+  arrange(desc(CVRelativeAbundance))
+
+ggplot(ruth_rel_pivot_present, 
+       aes(x = reorder(feature, CVRelativeAbundance), y = CVRelativeAbundance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Coefficient of Variation (when present)") +
+  theme_minimal()
+
+# Boxplot of abundances
+ruth_rel %>%
+  pivot_longer(cols = 3:ncol(ruth_rel), names_to = "Sample", values_to = "RelativeAbundance") %>%
+  filter(feature %in% ruth_filt$feature) %>%
+  filter(RelativeAbundance > 0) %>%
+  mutate(feature = factor(feature, levels = rev(unique(ruth_rel_pivot_present$feature)))) %>%
+  ggplot(aes(x = feature, y = RelativeAbundance)) +
+  geom_boxplot(fill='lightgreen') +
+  coord_flip() +
+  labs(x = "Function",
+       y = "Relative Abundance (when present)") +
+  theme_minimal()
+
+# Now let's look at the relationship between prevalence and abundance for each function
+prev_abund = prev %>%
+  left_join(ruth_rel_pivot_present, by = "feature")
+ggplot(prev_abund, aes(y = Prevalence, x = MeanRelativeAbundance)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(y = "Prevalence",
+       x = "Mean Relative Abundance (when present)") +
+  theme_minimal()
+
+# Coefficient of variation vs mean relative abundance
+ggplot(prev_abund, aes(x = MeanRelativeAbundance, y = CVRelativeAbundance)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(x = "Mean Relative Abundance (when present)",
+       y = "Coefficient of Variation (when present)") +
+  theme_minimal()
+```

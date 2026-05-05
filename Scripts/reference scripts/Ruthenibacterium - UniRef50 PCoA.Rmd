@@ -1,0 +1,185 @@
+---
+title: "Ruthenibacterium functional comparison"
+author: "Avril Metcalfe-Roach"
+date: "2026-03-10"
+output: html_document
+---
+
+Pulling all the ruthenibacterium functions to see what differentiates it from other taxa.
+CURRENTLY REMOVING THE UNINTEGRATED COUNTS EVEN IF IT'S ANNOTATED AS RUTHENIBACTERIUM
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+path = data.table::fread('../Data/humann_exports_mgx_g4h/mgx_genefamilies_stratified.tsv', check.names = F)
+path_sep = path %>% 
+  separate(`# Gene Family`, into = c('feature', 'taxon'), sep = '\\|')
+  
+# Select ruthenibacterium
+ruth = path_sep %>% filter(str_detect(taxon, 'Ruthenibacterium'),
+                           feature !='UNINTEGRATED') %>% 
+  select(-taxon) %>% 
+  column_to_rownames(var = 'feature')
+
+# Let's remove all columns that have only 0 values (these don't have the taxon present)
+w = which(colSums(ruth) ==0)
+ruth = ruth[,-w]
+
+# Rarefy this count data table
+ruth_rare = phyloseq(otu_table(round(ruth,0), taxa_are_rows = TRUE)) %>% rarefy_even_depth(rngseed = 421)
+```
+
+We will create a PCoA plot to differentiate samples based on functional similarity.
+
+```{r}
+# First, we need to calculate the distance matrix. We'll use Bray-Curtis distance for this.
+library(vegan)
+
+make_plot = function(df,method){
+  # df=ruth_rare; method='bray'
+  
+  ruth_dist = vegdist(t(df), method = method)
+
+  # Now we can perform PCoA on the distance matrix
+  ruth_pcoa = cmdscale(ruth_dist, k = 2, eig = TRUE)
+  # Let's create a data frame for plotting
+  pcoa_df = data.frame(Sample = rownames(ruth_pcoa$points),
+                        PC1 = ruth_pcoa$points[,1],
+                        PC2 = ruth_pcoa$points[,2])
+  
+  
+  # Correlate functions with the axes
+  loadings_pc1 <- apply(data.frame(df), 1, function(feature_abund) {
+    cor(pcoa_df$PC1, feature_abund) # Just take first sample vector match
+  })
+  loadings_pc2 <- apply(data.frame(df), 1, function(feature_abund) {
+    cor(pcoa_df$PC2, feature_abund) # Just take first sample vector match
+  })
+  loadings = tibble(feature = rownames(df), 
+                    PC1_loading = loadings_pc1, 
+                    PC2_loading = loadings_pc2) %>%
+    arrange(desc(abs(PC1_loading)))
+  
+  # Now we can plot the PCoA
+  p = ggplot(pcoa_df, aes(x = PC1, y = PC2)) +
+    geom_point(size = 3) +
+    labs(title = paste("R. lactatiformans functions - ", method),
+         x = paste0("PC1 (", round(ruth_pcoa$eig[1] / sum(ruth_pcoa$eig) * 100, 2), "%)"),
+         y = paste0("PC2 (", round(ruth_pcoa$eig[2] / sum(ruth_pcoa$eig) * 100, 2), "%)")) +
+    theme_minimal(base_size=18)
+  
+  print(p)
+  return(list(plot=p,loadings=loadings))
+}
+
+p_bray = make_plot(ruth_rare, method = 'bray')
+p_jaccard = make_plot(ruth_rare, method = 'jaccard')
+```
+
+Now take a look at the top loadings
+
+```{r}
+p_bray_pc1 = p_bray$loadings %>% slice_head(n=20) # richness and evenness
+p_jaccard_pc1 = p_jaccard$loadings %>% slice_head(n=20) # richness
+
+sig_ids = intersect(p_bray_pc1$feature, p_jaccard_pc1$feature)  # 19 shared
+sig_ids
+
+# Manual annotation because the website isn't working
+# Lots of these are associated with Subdoligranulum, another Oscillospiraceae
+sig_ids_annot = tibble(feature= sig_ids,
+                       annotation = c("Cluster: ABC transporter, ATP-binding protein",
+                                      "Cluster: Multidrug-efflux transporter",
+                                      "Cluster: Uncharacterized protein",
+                                      "tRNA-t(6)A37 methylthiotransferase",
+                                      "Cluster: Stage 0 sporulation protein A homolog",
+                                      "Cluster: Radical SAM protein",
+                                      "Cluster: Uncharacterized protein",
+                                      "RNA polymerase sigma factor, region 3/4-like",
+                                      "HAMP domain-containing protein",
+                                      "Uncharacterized protein",
+                                      "Cluster: GHMP kinase, N-terminal domain protein",
+                                      "MATE family efflux transporter",
+                                      "Sugar (Glycoside-Pentoside-Hexuronide) transporter",
+                                      "N-acetyltransferase domain-containing protein",
+                                      "Cluster: Membrane transport protein MMPL domain-containing protein",
+                                      "Uncharacterized protein",
+                                      "Cluster: Nicotinate phosphoribosyltransferase",
+                                      "Cluster: L-serine deaminase",
+                                      "Flavodoxin")) %>% 
+  left_join(p_bray_pc1 %>% select(-PC2_loading))
+sig_ids_annot[sig_ids_annot$PC1_loading > 0,] %>% arrange(desc(PC1_loading))
+sig_ids_annot[sig_ids_annot$PC1_loading < 0,] %>% arrange(desc(PC1_loading))
+```
+
+# Explore using the x axis of the PCA plot to categorize the samples
+
+```{r}
+# Load phyloseq objct
+ps = readRDS('../Data/pilot_metagenomic_phyloseq_g4h.rds')
+sam = data.frame(ps@sam_data) %>% 
+  rownames_to_column('Sample')
+
+# Fix names, add metadata ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# sample key
+key <- read_csv("~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/sample_key.csv")
+
+pcoa_df = p_bray$plot$data %>% `rownames<-`(NULL) %>% 
+  select(Sample,PC1) %>% 
+  mutate(old = sapply(.$Sample,function(x)str_split(x, pattern = "_",)[[1]][1] %>% as.numeric())) %>% 
+  left_join(key) %>%
+  select(-old, -Sample) %>%
+  rename(Sample=new) %>% 
+  left_join(sam)
+```
+ NUMERIC
+```{r}
+# Identify all the numeric columns
+numeric_cols <- sapply(pcoa_df, is.numeric)
+
+# Create a new data frame with only the numeric columns
+pcoa_numeric <- pcoa_df[, numeric_cols]
+
+# Correlate the numeric columns with PC1
+cor_results <- sapply(pcoa_numeric, function(x) cor(x, pcoa_df$PC1, method = "spearman"))
+
+cor_results_df <- data.frame(Variable = names(cor_results), Correlation = cor_results) %>%
+  arrange(desc(abs(Correlation)))
+```
+
+```{r}
+# Same plot as above, but for all variables with a correlation over 0.3
+to_plot = cor_results_df %>% filter(abs(Correlation) > 0.3) %>% pull(Variable)
+for (var in to_plot) {
+  p <- ggplot(pcoa_df, aes_string(x = var, y = "PC1")) +
+    geom_point() +
+    geom_smooth(method = 'lm') +
+    labs(title = paste("PC1 vs", var),
+         y = "PC1 Score",
+         x = var) +
+    theme_minimal(base_size=18)
+  
+  print(p)
+}
+```
+
+Let's use teh same approach, but for the categorical variables.
+```{r}
+# Identify all the categorical columns
+categorical_cols <- sapply(pcoa_df, is.character)
+# Create a new data frame with only the categorical columns
+pcoa_categorical <- pcoa_df[, categorical_cols]
+# Create boxplots for each categorical variable against PC1
+for (var in names(pcoa_categorical)) {
+  p <- ggplot(pcoa_df, aes_string(x = var, y = "PC1")) +
+    geom_boxplot() +
+    labs(title = paste("PC1 vs", var),
+         y = "PC1 Score",
+         x = var) +
+    theme_minimal(base_size=18)
+  
+  print(p)
+}
+```
+
+

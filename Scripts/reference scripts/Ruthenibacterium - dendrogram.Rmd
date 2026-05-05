@@ -1,0 +1,120 @@
+---
+title: "Ruthenibacterium - unique functions"
+author: "Avril Metcalfe-Roach"
+date: "2026-03-11"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+
+# Stratified dataset
+mgx = data.table::fread('Data/humann_exports_mgx_g4h/mgx_genefamilies_stratified.tsv')
+mgx_formatted = mgx %>% 
+  separate(`# Gene Family`, into = c('feature', 'taxon'), sep = '\\|') %>% 
+  pivot_longer(cols = -c(feature, taxon), names_to = 'sample', values_to = 'abundance') %>%
+  group_by(feature, taxon) %>% 
+  summarize(abundance = sum(abundance)) %>% 
+  ungroup()
+mgx_formatted2 = mgx_formatted %>% 
+  filter(taxon != 'unclassified') %>%
+  pivot_wider(names_from = taxon, values_from = abundance, values_fill = 0) %>% 
+  column_to_rownames('feature')
+
+mgx_formatted3 = mgx_formatted2 %>% 
+  mutate(across(where(is.numeric), ~ . / sum(.)))
+
+# Remove taxa that are present in less than 3 samples
+mgx_formatted3 = mgx_formatted3 %>% 
+  select(where(~sum(. > 0) >= 3))
+
+# Calculate distance matrix and hierarchical clustering
+dist_matrix = dist(mgx_formatted3, method = 'euclidean')
+hc = hclust(dist_matrix, method = 'ward.D2')
+# Plot dendrogram
+plot(hc, main = 'Dendrogram of Gene Families', xlab = 'Gene Families', ylab = 'Distance')
+
+```
+
+Use this website to annotate the genes: https://www.uniprot.org/id-mapping 
+
+```{r}
+# Load the annotated genes
+annot = readxl::read_xlsx('Data/Ruthenibacterium - unique uniref50 annotations.xlsx',sheet='No unknown or deleted')
+
+# Load the gene counts
+gene = data.table::fread('Data/humann_exports_mgx_g4h/mgx_genefamilies_unstratified.tsv') %>% 
+  mutate(across(where(is.numeric), ~ . / sum(.))) %>%
+  mutate(`# Gene Family` = sapply(.$`# Gene Family`, function(x) str_split(x,'[:]')[[1]][1])) %>% 
+  mutate(`# Gene Family` = str_replace_all(.$`# Gene Family`, 'UniRef50_', ''))
+
+# Filter and annotate
+gene_filt = gene %>% 
+  filter(`# Gene Family` %in% c(annot$From)) %>% 
+  rename(feature = `# Gene Family`) 
+
+gene_prev = gene_filt %>% 
+  pivot_longer(cols = -feature, names_to = 'sample', values_to = 'abundance') %>% 
+  group_by(feature) %>% 
+  summarise(prev = sum(abundance > 0)) %>%  # Number of people with R. lac
+  filter(prev>3) # Present in more than 3 people
+```
+
+
+```{r}
+# Load phyloseq objct
+ps = readRDS('Data/pilot_metagenomic_phyloseq_g4h.rds')
+sam = data.frame(ps@sam_data) %>% 
+  rownames_to_column('Sample')
+
+# Fix non-real values in table
+sam[sam==-7] = NA # -7 is NA
+sam[sam==9] = NA # 9 = 'Don't know'
+
+# Remove columns in sam where there is almost no variance
+sam_filt = sam %>% select(where(~n_distinct(.[!is.na(.)]) > 1))
+# Remove variables where there is only one person with a different value than everyone else
+list_to_remove = sam_filt %>% select(where(~n_distinct(.[!is.na(.)]) == 2)) %>% 
+  select(-where(~all(table(.) > 4))) # only 1-4 people have a different value
+sam_filt = sam_filt %>% select(-all_of(colnames(list_to_remove)))
+
+
+# Fix names, add metadata ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# sample key
+key <- read_csv("~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/sample_key.csv")
+
+gene_annot = gene_filt %>%
+  pivot_longer(cols = -feature, names_to = 'Sample', values_to = 'abundance') %>%
+  mutate(Sample = sapply(.$Sample,function(x) str_split(x, pattern = "_",)[[1]][1] %>% as.numeric())) %>% 
+   left_join(key %>% rename(Sample=old)) %>%
+  select(-Sample) %>%
+  rename(Sample=new) %>% 
+  left_join(sam_filt)
+
+# Correlate abundances with outcomes of interest
+cor_gene = gene_annot %>% 
+  # Select numeric columns, feature, abundance, and Sample
+  select(feature, abundance, Sample,all_of(colnames(gene_annot)[sapply(gene_annot, is.numeric)])) %>%
+  pivot_longer(cols = -c(feature:Sample), 
+               names_to = 'variable', values_to = 'value') %>%
+  filter(!is.na(value)) %>%
+  group_by(feature,variable) %>% 
+  summarise(n = n(),
+            cor_var = cor(abundance, value, method = 'spearman'),
+            box_var = kruskal.test(abundance ~ as.character(value))$p.value,
+            p_var = cor.test(abundance, value, method = 'spearman')$p.value) %>%
+  ungroup() 
+
+cor_filt = cor_gene %>% filter(n>5, box_var < 0.05) %>% 
+   group_by(feature) %>% 
+  mutate(n_feature = n()) %>%
+  ungroup() %>%
+  group_by(variable) %>%
+  mutate(n_variable = n()) %>%
+   ungroup()
+
+
+table(cor_filt$variable) %>% sort(decreasing = TRUE)
+table(cor_filt$feature) %>% sort(decreasing = TRUE) 
+  
+```
