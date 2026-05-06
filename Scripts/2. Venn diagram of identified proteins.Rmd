@@ -1,0 +1,38 @@
+---
+title: "2. Venn diagram of identified proteins"
+author: "Avril Metcalfe-Roach"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(phyloseq)
+library(ggVennDiagram)
+
+# Change as needed - I can't upload the data to Github for privacy reasons
+my_data_location = "~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/"
+
+temp = fread(paste0(my_data_location,'humann_exports_mgx_g4h/mgx_genefamilies_cpm.tsv')) 
+dfg = temp %>% 
+  filter(str_detect(`# Gene Family`, 'Ruthenibacterium')) %>% 
+  mutate(`# Gene Family` = sapply(.$`# Gene Family`, function(x) str_split(x,'[|]g__Ruthenibacterium[.]')[[1]][1])) %>% 
+  rename(uniprot = `# Gene Family`)
+  
+temp = fread(paste0(my_data_location,'humann_exports_mtx_g4h/mtx_genefamilies_cpm.tsv')) 
+dft = temp %>% 
+  filter(str_detect(`# Gene Family`, 'Ruthenibacterium')) %>% 
+  mutate(`# Gene Family` = sapply(.$`# Gene Family`, function(x) str_split(x,'[|]g__Ruthenibacterium[.]')[[1]][1])) %>% 
+  rename(uniprot = `# Gene Family`)
+```
+
+```{r VENN_DIAGRAM}
+venn_data = list(MGX = unique(dfg$uniprot),
+                 MTX = unique(dft$uniprot))
+ggVennDiagram(venn_data) +
+  theme_void(base_size=16)
+getwd()
+# Edit the labels manually before adding to poster
+ggsave('../Outputs/2. Venn diagram of UniRef IDs.png', width = 3, height = 3)
+```
+
