@@ -1,0 +1,138 @@
+---
+title: "4a. Unique Proteins vs Rome Constipation"
+author: "Avril Metcalfe-Roach"
+output: html_document
+---
+
+```{r LOAD_DATA}
+library(tidyverse)
+
+# Change as needed - I can't upload the data to Github for privacy reasons
+my_data_location = "~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/"
+
+# Load the annotated genes
+annot = readxl::read_xlsx('../Outputs/3. MGX Unique UniRef50IDs - Annotated.xlsx',sheet='No unknown or deleted')
+
+# Load the gene counts
+gene = data.table::fread(paste0(my_data_location,'humann_exports_mgx_g4h/mgx_genefamilies_unstratified.tsv')) %>% 
+  mutate(across(where(is.numeric), ~ . / sum(.))) %>%
+  mutate(`# Gene Family` = sapply(.$`# Gene Family`, function(x) str_split(x,'[:]')[[1]][1])) %>% 
+  mutate(`# Gene Family` = str_replace_all(.$`# Gene Family`, 'UniRef50_', ''))
+```
+
+Only considering proteins that are present in at least 3 people.
+
+```{r FILTER_AND_ANNOTATE}
+# Filter and annotate
+gene_filt = gene %>% 
+  filter(`# Gene Family` %in% c(annot$From)) %>% 
+  rename(feature = `# Gene Family`) 
+
+gene_prev = gene_filt %>% 
+  pivot_longer(cols = -feature, names_to = 'sample', values_to = 'abundance') %>% 
+  group_by(feature) %>% 
+  summarise(prev = sum(abundance > 0)) %>%  # Number of people with R. lac
+  filter(prev>3) # Present in more than 3 people
+```
+
+
+```{r ADD_METADATA}
+# Load phyloseq objct
+ps = readRDS(paste0(my_data_location,'pilot_metagenomic_phyloseq_g4h.rds'))
+sam = data.frame(ps@sam_data) %>% 
+  rownames_to_column('Sample')
+
+# Fix non-real values in table
+sam[sam==-7] = NA # -7 is NA
+sam[sam==9] = NA # 9 = 'Don't know'
+
+# Fix names, add metadata ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# sample key
+key <- read_csv(paste0(my_data_location,"sample_key.csv"))
+
+gene_annot = gene_filt %>%
+  pivot_longer(cols = -feature, names_to = 'Sample', values_to = 'abundance') %>%
+  mutate(Sample = sapply(.$Sample,function(x) str_split(x, pattern = "_",)[[1]][1] %>% as.numeric())) %>% 
+   left_join(key %>% rename(Sample=old)) %>%
+  select(-Sample) %>%
+  rename(Sample=new) %>% 
+  left_join(sam)
+```
+
+gene_annot has one row per sample/UniRef50 ID pair.
+
+```{r EXPLORE_ROME_CONSTIPATION_DATA}
+# Extract all the ROME constipation questions
+temp = sam %>% select(Sample,contains('CMMI_HS_BOWEL')) %>% 
+  pivot_longer(cols = -Sample, names_to = 'variable', values_to = 'value') %>%
+  group_by(variable, value) %>%
+  summarise(n = n()) %>%
+  ungroup() %>% 
+  pivot_wider(names_from = value, values_from = n, values_fill = 0) %>% 
+  select(-`NA`)
+temp$`4` = 0 # Nobody has this, but it was an option, so adding it back for posterity
+
+# Add descriptions
+desc = readxl::read_xlsx(paste0(my_data_location,'CMMI_Healthy Ager Pilot Data_ALL VARIABLES_Sep 18 2025.xlsx'), sheet = 'Data Dictionary') %>% 
+  select(variable_name, description) %>% 
+  rename(variable = variable_name) %>% 
+  filter(variable %in% temp$variable) %>% 
+  right_join(temp) %>%
+  select(variable, description, everything())
+
+# Inspection of desc: all the variables except for CMMI_HS_BOWEL_1 have decent variance. Those ones will be included in the subsequent correlations.
+```
+
+```{r ROME_STATS}
+# Select all ROME questions except for CMMI_HS_BOWEL_1
+bowel = sam %>% select(contains('CMMI_HS_BOWEL')) %>% colnames() %>% 
+  setdiff("CMMI_HS_BOWEL_1")
+
+# Rationale for Wilcoxon test: every question is heavily skewed toward no issues, so it has to be nonparametric.
+# Since the non-zero numbers are sparse, I'm grouping them all in order to make every stool variable binary.
+final_data = gene_annot %>% 
+  select(feature, abundance, Sample, all_of(bowel)) %>%
+  filter(feature %in% gene_prev$feature) %>%
+  # Make this variable match the formatting of the others - 0 = no issues, 1 = any issues
+  mutate(CMMI_HS_BOWEL_9 = ifelse(is.na(CMMI_HS_BOWEL_9),NA,ifelse(CMMI_HS_BOWEL_9 == 2, 0, 1))) %>%
+  pivot_longer(cols = -c(feature:Sample), names_to = 'variable', values_to = 'value') %>%
+  filter(!is.na(value)) %>% 
+  mutate(value = ifelse(value == 0, 'No', 'Yes')) # Make this binary for plotting purposes
+
+stats = final_data %>%
+  group_by(feature, variable) %>%
+  summarise(cor = wilcox.test(abundance ~ as.character(value))$statistic,
+            pval = wilcox.test(abundance ~ as.character(value))$p.value) %>%
+  ungroup() %>% 
+  filter(!is.nan(cor))
+
+# Plot these results as a heatmap
+plot_data = stats %>% left_join(desc) %>% 
+  # mutate(feature = factor(feature, levels = rev(unique(stats_filt$feature)))) %>%
+  # mutate(variable = factor(variable, levels = unique(desc$variable))) %>% 
+  # Not sure why there are NAs - figure out later
+  filter(!is.na(feature))
+
+# P VALUES - FILT
+plot_wide = plot_data %>% select(variable,feature,pval) %>% 
+  filter(pval < 0.05) %>% 
+  mutate(pval = -log10(pval)) %>% 
+  pivot_wider(names_from = variable, values_from = pval) %>% 
+  column_to_rownames('feature')
+plot_wide[is.na(plot_wide)] = 0 # Set NA values to 0 for plotting
+
+# Generate clustered heatmap with dendrogram on both axes
+library(pheatmap)
+pheatmap(
+  plot_wide,
+  color = colorRampPalette(c("white", "red"))(100),
+  scale = "none",               # Don't scale the data since -log10(p) is already interpretable
+  cluster_cols = T,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  show_rownames = TRUE,
+  show_colnames = TRUE
+)
+```
+
