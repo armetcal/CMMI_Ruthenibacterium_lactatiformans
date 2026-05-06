@@ -1,0 +1,33 @@
+---
+title: "3. Identification of Unique Functions"
+author: "Avril Metcalfe-Roach"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+
+# Change as needed - I can't upload the data to Github for privacy reasons
+my_data_location = "~/Library/CloudStorage/OneDrive-UBC/CMMI/ANALYSES/Pilot/Data/"
+
+# Load the unique proteins identified in a different pipeline
+# Not using the filtered version - those are common across the whole taxon, we want the variable ones too
+unique_mgx = read.delim(paste0(my_data_location,'unique_proteins_g4h/mgx_uniprot50_in_one_taxon_only.tsv'))
+unique_mtx = read.delim(paste0(my_data_location,'unique_proteins_g4h/mtx_uniprot50_in_one_taxon_only.tsv'))
+
+# Filter for Ruthenibacterium
+ruth_mgx = unique_mgx %>% filter(str_detect(taxon,'Ruthenibacterium'))
+ruth_mtx = unique_mtx %>% filter(str_detect(taxon,'Ruthenibacterium'))
+
+# Now we have lists of UniRef50 IDs - need to annotate them.
+all_mgx = data.table::fread(paste0(my_data_location,'humann_exports_mgx_g4h/mgx_genefamilies_unstratified.tsv'))
+all_filt = all_mgx %>% filter(`# Gene Family` %in% c(ruth_mgx$uniprot)) %>% 
+  mutate(`# Gene Family` = sapply(.$`# Gene Family`, function(x) str_split(x,'[:]')[[1]][1])) %>% 
+  mutate(`# Gene Family` = str_replace_all(.$`# Gene Family`, 'UniRef50_', ''))
+
+write.table(all_filt$`# Gene Family`, '../Outputs/3. MGX Unique UniRef50 IDs.tsv', row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+Use this website to annotate the genes: https://www.uniprot.org/id-mapping 
+
+Saved as '../Outputs/3. MGX Unique UniRef50IDs - Annotated.xlsx'. Use sheet 'No unknown or deleted'.
