@@ -1,5 +1,5 @@
 ---
-title: "4a. Unique Proteins vs Rome Constipation"
+title: "4b. Unique Proteins vs Cardiovascular Health"
 author: "Avril Metcalfe-Roach"
 output: html_document
 ---
@@ -61,16 +61,31 @@ gene_annot = gene_filt %>%
 
 gene_annot has one row per sample/UniRef50 ID pair.
 
-```{r EXPLORE_ROME_CONSTIPATION_DATA}
+```{r EXPLORE_CV_DATA}
 # Extract all the ROME constipation questions
-temp = sam %>% select(Sample,contains('CMMI_HS_BOWEL')) %>% 
+cardio = c(
+  'CMMI_DIS_CARDIO_EVER',
+  'CMMI_DIS_HBP_EVER',
+  'CMMI_DIS_HIGH_CHOL_EVER',
+  'CMMI_DIS_MI_EVER',
+  'CMMI_DIS_HF_EVER',
+  'CMMI_DIS_CHD_EVER',
+  'CMMI_DIS_ATRIAL_EVER',
+  'CMMI_DIS_ARRHYTHMIA_EVER',
+  'CMMI_DIS_ANGINA_EVER',
+  'CMMI_DIS_HM_EVER',
+  'CMMI_DIS_VHD_EVER',
+  'CMMI_DIS_THROMBO_EVER',
+  'CMMI_DIS_HEMO_EVER'
+)
+
+temp = sam %>% select(Sample,all_of(cardio)) %>% 
+  filter(!is.na(CMMI_DIS_CARDIO_EVER)) %>%
   pivot_longer(cols = -Sample, names_to = 'variable', values_to = 'value') %>%
   group_by(variable, value) %>%
   summarise(n = n()) %>%
   ungroup() %>% 
-  pivot_wider(names_from = value, values_from = n, values_fill = 0) %>% 
-  select(-`NA`)
-temp$`4` = 0 # Nobody has this, but it was an option, so adding it back for posterity
+  pivot_wider(names_from = value, values_from = n, values_fill = 0)
 
 # Add descriptions
 desc = readxl::read_xlsx(paste0(my_data_location,'CMMI_Healthy Ager Pilot Data_ALL VARIABLES_Sep 18 2025.xlsx'), sheet = 'Data Dictionary') %>% 
@@ -80,21 +95,18 @@ desc = readxl::read_xlsx(paste0(my_data_location,'CMMI_Healthy Ager Pilot Data_A
   right_join(temp) %>%
   select(variable, description, everything())
 
-# Inspection of desc: all the variables except for CMMI_HS_BOWEL_1 have decent variance. Those ones will be included in the subsequent correlations.
+# Inspection of desc: only a few variables have enough variance to assess. Keeping anything with at least 4 non-zero values.
+to_test = temp %>% filter(`1` > 1) %>% pull(variable)
+to_test
 ```
 
-```{r ROME_STATS}
-# Select all ROME questions except for CMMI_HS_BOWEL_1
-bowel = sam %>% select(contains('CMMI_HS_BOWEL')) %>% colnames() %>% 
-  setdiff("CMMI_HS_BOWEL_1")
-
-# Rationale for Wilcoxon test: every question is heavily skewed toward no issues, so it has to be nonparametric.
-# Since the non-zero numbers are sparse, I'm grouping them all in order to make every stool variable binary.
+```{r CV_STATS}
+# Rationale for Wilcoxon test: every question is heavily skewed toward no issues, so it has to be nonparametric. All are binary.
 final_data = gene_annot %>% 
-  select(feature, abundance, Sample, all_of(bowel)) %>%
+  select(feature, abundance, Sample, all_of(to_test)) %>%
   filter(feature %in% gene_prev$feature) %>%
+  filter(!is.na(CMMI_DIS_CARDIO_EVER)) %>%
   # Make this variable match the formatting of the others - 0 = no issues, 1 = any issues
-  mutate(CMMI_HS_BOWEL_9 = ifelse(is.na(CMMI_HS_BOWEL_9),NA,ifelse(CMMI_HS_BOWEL_9 == 2, 0, 1))) %>%
   pivot_longer(cols = -c(feature:Sample), names_to = 'variable', values_to = 'value') %>%
   filter(!is.na(value)) %>% 
   mutate(value = ifelse(value == 0, 'No', 'Yes')) # Make this binary for plotting purposes
@@ -119,14 +131,12 @@ plot_wide = plot_data %>% select(variable,feature,pval) %>%
   column_to_rownames('feature')
 plot_wide[is.na(plot_wide)] = 0 # Set NA values to 0 for plotting
 
-nrow(plot_wide) # 39 features
-nrow(plot_wide %>% filter(CMMI_HS_BOWEL_8 > 0)) # 27 of which are significant in the question about mucus
-
+nrow(plot_wide) # 29 features
 # Generate clustered heatmap with dendrogram on both axes
 library(pheatmap)
 p = pheatmap(
   plot_wide,
-  color = colorRampPalette(c("white", "red"))(100),
+  color = colorRampPalette(c("white", "blue"))(100),
   scale = "none",               # Don't scale the data since -log10(p) is already interpretable
   cluster_cols = T,
   clustering_distance_rows = "euclidean",
@@ -134,7 +144,7 @@ p = pheatmap(
   clustering_method = "ward.D2",
   show_rownames = TRUE,
   show_colnames = TRUE,
-  filename="../Outputs/4a. Unique Proteins vs Rome Constipation - Heatmap.png"
+  filename="../Outputs/4b. Unique Proteins vs Cardiovascular Function - Heatmap.png"
 )
 ```
 
